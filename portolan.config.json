@@ -1,0 +1,15 @@
+{
+  "publisher": "Dirección General del Catastro",
+  "alias": "catastro-es",
+  "flag": "🟫",
+  "repo": "https://github.com/jatorre/catastro-es-portolan",
+  "s3_endpoint": "https://storage.googleapis.com",
+  "bucket_path": "catastro-es-portolan",
+  "public_base": "https://storage.googleapis.com/catastro-es-portolan",
+  "gs_path": "gs://catastro-es-portolan",
+  "rest_prefix": "sdi",
+  "data_provider": "Dirección General del Catastro — Catastro INSPIRE (datos no protegidos)",
+  "data_license": "Catastro INSPIRE — reutilización de datos abiertos (sin titularidad ni valor catastral)",
+  "crs": "EPSG:25830",
+  "scope": "Comunidad de Madrid (fase 1 — publicada); resto de España por provincias (fase 2)"
+}

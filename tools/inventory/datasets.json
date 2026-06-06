@@ -1,0 +1,23 @@
+{
+ "edificios": {
+  "id": "edificios",
+  "src": "edificios.parquet",
+  "title": "Edificios (Catastro INSPIRE)",
+  "theme": "catastro",
+  "type": "vector"
+ },
+ "parcelas": {
+  "id": "parcelas",
+  "src": "parcelas.parquet",
+  "title": "Parcelas catastrales (Catastro INSPIRE)",
+  "theme": "catastro",
+  "type": "vector"
+ },
+ "direcciones": {
+  "id": "direcciones",
+  "src": "direcciones.parquet",
+  "title": "Direcciones / portales (Catastro INSPIRE)",
+  "theme": "catastro",
+  "type": "vector"
+ }
+}
