@@ -10,6 +10,12 @@
   "rest_prefix": "sdi",
   "data_provider": "Dirección General del Catastro — Catastro INSPIRE (datos no protegidos)",
   "data_license": "Catastro INSPIRE — reutilización de datos abiertos (sin titularidad ni valor catastral)",
-  "crs": "EPSG:25830",
-  "scope": "Comunidad de Madrid (fase 1 — publicada); resto de España por provincias (fase 2)"
+  "crs": "EPSG:4326",
+  "scope": "España completa — 52 gerencias territoriales del Catastro INSPIRE (territorio común). País Vasco (01/20/48) y Navarra (31) tienen catastro foral propio, fuera de este servicio.",
+  "datasets": {
+    "edificios": 12489197,
+    "parcelas": 51953175,
+    "direcciones": 15886629
+  },
+  "layout": "data/parquet/{tema}/provincia={NN}.parquet (Hive-partitioned, EPSG:4326, GeoParquet 1.1, ordenado Hilbert, ZSTD)"
 }
