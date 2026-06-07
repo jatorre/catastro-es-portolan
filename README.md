@@ -66,6 +66,88 @@ SHOW ALL TABLES;                                       -- v3.edificios/parcelas/
 > nacional es el GeoParquet particionado de arriba; regenerar el índice Iceberg sobre el particionado es
 > el siguiente paso (ver `tools/build_catalog.py`).
 
+## Formato v3 unificado (geom nativo + bbox) — un juego de ficheros, dos motores
+Bajo `…/v3/{tema}/` está el **mismo dato re-expuesto en un formato que sirve a la vez a DuckDB y a
+Snowflake/Iceberg**, sin duplicar almacenamiento. Los ficheros de datos de la tabla Iceberg v3 **son
+GeoParquet normal**: puedes leerlos directos con `read_parquet` o registrarlos como tabla Iceberg.
+
+```
+gs://catastro-es-portolan/v3/{edificios,parcelas,direcciones}/
+  data/provincia={NN}.parquet      ← GeoParquet 2.0 (un fichero por gerencia)
+  metadata/v1.metadata.json + *.avro  ← Iceberg v3 (manifest con bounds de geom packed_xy_le)
+```
+
+Cada fichero lleva:
+- **`geom`** → tipo lógico **`Geometry(crs=srid:4326)` nativo de Parquet** (GeoParquet 2.0). DuckDB lo
+  lee como `GEOMETRY` sin cast; Snowflake lo materializa como `GEOMETRY(4326)`.
+- **`xmin, ymin, xmax, ymax`** (DOUBLE) → el *bounding box* por fila, para **poda por predicado numérico**.
+- Todos los atributos del Catastro con **nombre limpio + descripción embebida** en los metadatos de columna
+  (`field_id` + `description`).
+
+> **Por qué `srid:4326` importa:** si el CRS del tipo Parquet va vacío, Snowflake falla con
+> `Failed to cast variant value … to REAL`. Debe escribirse exactamente `srid:4326`
+> (`geoarrow.wkb().with_crs("srid:4326")`).
+
+### DuckDB — lectura directa + poda por bbox
+DuckDB **no** dispara poda desde `ST_Intersects(geom,…)` (aún no deserializa los bounds de geom del
+manifest); por eso **se consulta con predicado `bbox`**, que sí poda por las stats de row-group:
+```sql
+INSTALL httpfs;LOAD httpfs;INSTALL spatial;LOAD spatial;
+CREATE SECRET g (TYPE s3, PROVIDER config, KEY_ID '', SECRET '',
+  ENDPOINT 'storage.googleapis.com', URL_STYLE 'path', USE_SSL true, REGION 'auto');
+
+-- edificios del centro de Madrid (poda por bbox + partición de provincia)
+SELECT count(*) FROM read_parquet(
+  's3://catastro-es-portolan/v3/edificios/data/*.parquet', hive_partitioning=1)
+WHERE provincia='28' AND xmin BETWEEN -3.71 AND -3.69 AND ymin BETWEEN 40.41 AND 40.43;
+
+-- la geometría está ahí para análisis exacto (refina tras el prefiltro bbox)
+SELECT reference, year_built, area_m2 FROM read_parquet(
+  's3://catastro-es-portolan/v3/edificios/data/provincia=28.parquet')
+WHERE xmin BETWEEN -3.71 AND -3.69 AND ymin BETWEEN 40.41 AND 40.43
+  AND ST_Intersects(geom, ST_MakeEnvelope(-3.71,40.41,-3.69,40.43));
+```
+
+### Snowflake — tabla Iceberg externa
+El external volume debe estar en la **misma región** que la cuenta Snowflake (requisito de Snowflake);
+los datos públicos están en `europe-southwest1`. Registro de la tabla externa:
+```sql
+CREATE OR REPLACE ICEBERG TABLE catastro_edificios
+  EXTERNAL_VOLUME='<vol_misma_region>' CATALOG='<object_store_catalog>'
+  METADATA_FILE_PATH='v3/edificios/metadata/v1.metadata.json';
+
+-- consulta por bbox (poda micro-particiones, igual que DuckDB)
+SELECT COUNT(*) FROM catastro_edificios
+WHERE xmin BETWEEN -3.71 AND -3.69 AND ymin BETWEEN 40.41 AND 40.43;
+```
+
+### Matriz de soporte (medido)
+| operación | DuckDB | Snowflake (externo) |
+|---|:--:|:--:|
+| Leer `geom` como geometría nativa | ✅ | ✅ (`GEOMETRY(4326)`) |
+| Leer atributos + descripciones | ✅ | ✅ |
+| Poda por predicado **`bbox`** | ✅ (stats row-group) | ✅ (micro-particiones) |
+| Poda por **`ST_Intersects(geom)`** | ❌ (no deserializa bounds geom; usar bbox) | ⚠️ funciona en *managed*; en **externo con polígonos** da error interno `300010` (límite Snowflake; usar bbox) |
+
+**Conclusión práctica:** las columnas `bbox` son la vía de poda robusta en **ambos** motores hoy. La
+geometría nativa queda lista para cuando cada motor complete su poda espacial nativa (DuckDB:
+[duckdb-iceberg#1002/#1013](https://github.com/duckdb/duckdb-iceberg/issues/1002)).
+
+### Diccionario de campos
+**`edificios`** — `reference` (refcat 14c) · `local_id` · `condition` (estado: functional/ruin/…) ·
+`year_built` (año constr., INSPIRE *beginning*) · `current_use` (1_residential, 3_industrial, …) ·
+`num_units` · `num_dwellings` (nº viviendas) · `floors_above` (plantas sobre rasante) ·
+`area_m2` (superficie construida) · `cod_municipio` · `provincia` · `xmin/ymin/xmax/ymax` · `geom`.
+
+**`parcelas`** — `reference` (refcat nacional) · `local_id` · `label` (nº parcela) ·
+`area_m2` (superficie) · `cod_municipio` · `provincia` · `xmin/ymin/xmax/ymax` · `geom`.
+
+**`direcciones`** — `local_id` · `designator` (nº de policía) · `type` · `level` · `specification`
+(entrance/parcel/building) · `method` · `cod_municipio` · `provincia` · `xmin/ymin/xmax/ymax` · `geom`.
+
+Construido por `tools/cat_v3_build.py` (re-encode geom nativo + bbox + descripciones) y
+`tools/cat_v3_meta.py` (metadata Iceberg v3 con bounds en id+geom).
+
 ## Cómo se construye (notas técnicas — gotchas reales)
 Fuente: **Catastro INSPIRE ATOM**, por municipio y tema (Buildings/CadastralParcels/Addresses), GML zip,
 refresco ~6 meses. Pipeline por **gerencia** en `tools/` (resumable, salta lo ya hecho):
