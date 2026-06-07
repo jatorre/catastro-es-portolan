@@ -77,61 +77,66 @@ gs://catastro-es-portolan/v3/{edificios,parcelas,direcciones}/
   metadata/v1.metadata.json + *.avro  ← Iceberg v3 (manifest con bounds de geom packed_xy_le)
 ```
 
-Cada fichero lleva:
-- **`geom`** → tipo lógico **`Geometry(crs=srid:4326)` nativo de Parquet** (GeoParquet 2.0). DuckDB lo
-  lee como `GEOMETRY` sin cast; Snowflake lo materializa como `GEOMETRY(4326)`.
-- **`xmin, ymin, xmax, ymax`** (DOUBLE) → el *bounding box* por fila, para **poda por predicado numérico**.
-- Todos los atributos del Catastro con **nombre limpio + descripción embebida** en los metadatos de columna
-  (`field_id` + `description`).
+**Cada motor usa su vía de poda NATIVA** sobre el mismo fichero:
+- **`geom`** → tipo lógico **`Geometry(crs=srid:4326)` nativo de Parquet** (GeoParquet 2.0). Snowflake lo
+  materializa como `GEOMETRY(4326)` y **poda por `ST_Intersects(geom,…)` nativo, sin bbox**. DuckDB lo lee
+  como `GEOMETRY` sin cast.
+- **`xmin, ymin, xmax, ymax`** (DOUBLE) → bounding box por fila. **Para DuckDB** (poda por predicado
+  numérico). Están en el parquet pero **OCULTAS del esquema Iceberg**, así Snowflake no las ve y poda por geom.
+- Atributos del Catastro con **nombre limpio + descripción embebida** (`field_id` + `description`).
 
-> **Por qué `srid:4326` importa:** si el CRS del tipo Parquet va vacío, Snowflake falla con
-> `Failed to cast variant value … to REAL`. Debe escribirse exactamente `srid:4326`
-> (`geoarrow.wkb().with_crs("srid:4326")`).
+> **Tres requisitos para que Snowflake pode el geom externo** (descubiertos midiendo; ver
+> [duckdb-iceberg#1002](https://github.com/duckdb/duckdb-iceberg/issues/1002) para el lado DuckDB):
+> **(1)** CRS del tipo Parquet = exactamente `srid:4326` (vacío → `cast variant to REAL`);
+> **(2)** `lower/upper` bounds en el manifest para **todas** las columnas del esquema (placeholder en
+> columnas all-null como `floors_above`); **(3)** field-id de `geom` **contiguo, sin huecos** (por eso
+> `geom` va antes que `bbox` en el parquet). Si falta cualquiera → error interno `300010`.
+
+### Snowflake — poda NATIVA por geom (sin bbox)
+El external volume debe estar en la **misma región** que la cuenta Snowflake; los datos públicos están en
+`europe-southwest1` (si tu cuenta está en otra región, espeja el `v3/` a un bucket de tu región).
+```sql
+CREATE OR REPLACE ICEBERG TABLE catastro_edificios
+  EXTERNAL_VOLUME='<vol_misma_region>' CATALOG='<object_store_catalog>'
+  METADATA_FILE_PATH='cat-edif-v3/metadata/v1.metadata.json';
+
+-- consulta espacial nativa: Snowflake poda micro-particiones por los bounds de geom (sin bbox)
+SELECT COUNT(*) FROM catastro_edificios
+WHERE ST_INTERSECTS(geom, ST_GEOMFROMWKT('POLYGON((-3.71 40.41,-3.69 40.41,-3.69 40.43,-3.71 40.43,-3.71 40.41))',4326));
+-- medido: 1/52 micro-particiones escaneadas para una caja de ~2 km sobre 12,5 M de edificios.
+```
 
 ### DuckDB — lectura directa + poda por bbox
-DuckDB **no** dispara poda desde `ST_Intersects(geom,…)` (aún no deserializa los bounds de geom del
-manifest); por eso **se consulta con predicado `bbox`**, que sí poda por las stats de row-group:
+DuckDB **no** dispara poda desde `ST_Intersects(geom,…)` todavía
+([duckdb-iceberg#1002](https://github.com/duckdb/duckdb-iceberg/issues/1002)); por eso en DuckDB se usa el
+predicado **`bbox`** (poda por stats de row-group), leyendo el parquet directo:
 ```sql
 INSTALL httpfs;LOAD httpfs;INSTALL spatial;LOAD spatial;
 CREATE SECRET g (TYPE s3, PROVIDER config, KEY_ID '', SECRET '',
   ENDPOINT 'storage.googleapis.com', URL_STYLE 'path', USE_SSL true, REGION 'auto');
 
--- edificios del centro de Madrid (poda por bbox + partición de provincia)
 SELECT count(*) FROM read_parquet(
   's3://catastro-es-portolan/v3/edificios/data/*.parquet', hive_partitioning=1)
 WHERE provincia='28' AND xmin BETWEEN -3.71 AND -3.69 AND ymin BETWEEN 40.41 AND 40.43;
 
--- la geometría está ahí para análisis exacto (refina tras el prefiltro bbox)
+-- geometría exacta tras el prefiltro bbox
 SELECT reference, year_built, area_m2 FROM read_parquet(
   's3://catastro-es-portolan/v3/edificios/data/provincia=28.parquet')
 WHERE xmin BETWEEN -3.71 AND -3.69 AND ymin BETWEEN 40.41 AND 40.43
   AND ST_Intersects(geom, ST_MakeEnvelope(-3.71,40.41,-3.69,40.43));
 ```
 
-### Snowflake — tabla Iceberg externa
-El external volume debe estar en la **misma región** que la cuenta Snowflake (requisito de Snowflake);
-los datos públicos están en `europe-southwest1`. Registro de la tabla externa:
-```sql
-CREATE OR REPLACE ICEBERG TABLE catastro_edificios
-  EXTERNAL_VOLUME='<vol_misma_region>' CATALOG='<object_store_catalog>'
-  METADATA_FILE_PATH='v3/edificios/metadata/v1.metadata.json';
-
--- consulta por bbox (poda micro-particiones, igual que DuckDB)
-SELECT COUNT(*) FROM catastro_edificios
-WHERE xmin BETWEEN -3.71 AND -3.69 AND ymin BETWEEN 40.41 AND 40.43;
-```
-
 ### Matriz de soporte (medido)
-| operación | DuckDB | Snowflake (externo) |
+| operación | DuckDB (`read_parquet`) | Snowflake (Iceberg externo) |
 |---|:--:|:--:|
-| Leer `geom` como geometría nativa | ✅ | ✅ (`GEOMETRY(4326)`) |
-| Leer atributos + descripciones | ✅ | ✅ |
-| Poda por predicado **`bbox`** | ✅ (stats row-group) | ✅ (micro-particiones) |
-| Poda por **`ST_Intersects(geom)`** | ❌ (no deserializa bounds geom; usar bbox) | ⚠️ funciona en *managed*; en **externo con polígonos** da error interno `300010` (límite Snowflake; usar bbox) |
+| Leer `geom` como geometría nativa | ✅ `GEOMETRY` | ✅ `GEOMETRY(4326)` |
+| Leer atributos + descripciones | ✅ | ✅ (no ve bbox: oculto del esquema) |
+| **Poda espacial nativa** | por **`bbox`** (stats row-group) | por **`ST_Intersects(geom)`** — **1/52** part. |
+| `ST_Intersects(geom)` poda | ❌ todavía (usa bbox) | ✅ nativo |
 
-**Conclusión práctica:** las columnas `bbox` son la vía de poda robusta en **ambos** motores hoy. La
-geometría nativa queda lista para cuando cada motor complete su poda espacial nativa (DuckDB:
-[duckdb-iceberg#1002/#1013](https://github.com/duckdb/duckdb-iceberg/issues/1002)).
+**Conclusión:** un único juego de ficheros; **Snowflake consulta por `geom` (poda nativa, sin bbox)** y
+**DuckDB por `bbox`**. Las columnas bbox viven en el parquet (para DuckDB) pero ocultas del esquema Iceberg
+para no interferir con la poda de geom de Snowflake.
 
 ### Diccionario de campos
 **`edificios`** — `reference` (refcat 14c) · `local_id` · `condition` (estado: functional/ruin/…) ·

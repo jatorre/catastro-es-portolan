@@ -70,10 +70,12 @@ THEMES = {
 GEOM_DESC = "Geometría (EPSG:4326 / OGC:CRS84), tipo Geometry nativo de Parquet (GeoParquet 2.0). Snowflake/Iceberg podan sobre ella; DuckDB usa las columnas bbox."
 
 def theme_columns(theme):
-    """Devuelve la lista completa de columnas de salida en orden, con field_id asignado."""
+    """Devuelve la lista completa de columnas de salida en orden, con field_id asignado.
+    geom va ANTES que bbox: así las columnas del esquema Iceberg (atributos+geom, sin bbox) tienen
+    field-ids contiguos. Snowflake aborta la poda si el field-id de geom queda con huecos (bbox en medio)."""
     cols = list(THEMES[theme]) + COMMON_TAIL
-    cols += [(c,c,at,it,jt,d) for (c,at,it,jt,d) in BBOX_COLS]
     cols += [("geom","geom", GEOM_EXT, BinaryType(), "geometry", GEOM_DESC)]
+    cols += [(c,c,at,it,jt,d) for (c,at,it,jt,d) in BBOX_COLS]
     # asigna field ids 1..n
     out=[]
     for i,(src,name,at,it,jt,desc) in enumerate(cols,1):
@@ -117,24 +119,32 @@ def reencode_province(theme, NN, cols):
     # 3) sube
     subprocess.run(["gcloud","storage","cp",str(finp),f"{GS}/v3/{theme}/data/provincia={NN}.parquet","-q"],
                    capture_output=True, check=True)
-    # 4) bounds por fichero
+    # 4) bounds Iceberg por COLUMNA (todas) — Snowflake los exige en cada columna del esquema.
+    #    string->UTF8(trunc), int->4-byte LE, double->8-byte LE, geom->packed_xy_le(bbox).
+    #    Columna all-null -> placeholder (Snowflake aborta si falta el bound).
     nrows=tbl.num_rows
-    idcol=[c for c in cols if c["name"]=="reference"] or [c for c in cols if c["name"]=="local_id"]
-    idc=idcol[0]
-    ids=tbl[idc["name"]].drop_null()
-    id_lo=(pc.min(ids).as_py() or "").encode()[:64]; id_hi=(pc.max(ids).as_py() or "").encode()[:64]
-    def dmin(n): return pc.min(tbl[n]).as_py()
-    def dmax(n): return pc.max(tbl[n]).as_py()
-    gx0,gy0,gx1,gy1=dmin("xmin"),dmin("ymin"),dmax("xmax"),dmax("ymax")
-    geomc=[c for c in cols if c["name"]=="geom"][0]
-    lower={idc["fid"]: id_lo, geomc["fid"]: struct.pack("<dd",gx0,gy0)}
-    upper={idc["fid"]: id_hi, geomc["fid"]: struct.pack("<dd",gx1,gy1)}
-    vcounts={idc["fid"]:nrows, geomc["fid"]:nrows}; ncounts={idc["fid"]:0, geomc["fid"]:0}
-    for bb,(lo,hi) in {"xmin":(gx0,dmax("xmin")),"ymin":(gy0,dmax("ymin")),
-                       "xmax":(dmin("xmax"),gx1),"ymax":(dmin("ymax"),gy1)}.items():
-        c=[x for x in cols if x["name"]==bb][0]
-        lower[c["fid"]]=struct.pack("<d",lo); upper[c["fid"]]=struct.pack("<d",hi)
-        vcounts[c["fid"]]=nrows; ncounts[c["fid"]]=0
+    def enc(jt,v):
+        if v is None: return None
+        if jt=="string": return str(v).encode("utf-8")[:60]
+        if jt=="int":    return struct.pack("<i",int(v))
+        if jt=="double": return struct.pack("<d",float(v))
+        return None
+    def ph(jt):
+        return (b"",b"~") if jt=="string" else (struct.pack("<i",0),)*2 if jt=="int" else (struct.pack("<d",0.0),)*2
+    gx0=pc.min(tbl["xmin"]).as_py(); gy0=pc.min(tbl["ymin"]).as_py()
+    gx1=pc.max(tbl["xmax"]).as_py(); gy1=pc.max(tbl["ymax"]).as_py()
+    lower={}; upper={}; vcounts={}; ncounts={}
+    for c in cols:
+        fid=c["fid"]; col=tbl[c["name"]]; vcounts[fid]=nrows; ncounts[fid]=int(col.null_count)
+        if c["name"]=="geom":
+            if None not in (gx0,gy0,gx1,gy1): lower[fid]=struct.pack("<dd",gx0,gy0); upper[fid]=struct.pack("<dd",gx1,gy1)
+            else: lower[fid],upper[fid]=struct.pack("<dd",0.0,0.0),struct.pack("<dd",0.0,0.0)
+            continue
+        nn=col.drop_null()
+        if len(nn)>0: lo=enc(c["jtype"],pc.min(nn).as_py()); hi=enc(c["jtype"],pc.max(nn).as_py())
+        else: lo=hi=None
+        if lo is None: lo,hi=ph(c["jtype"])
+        lower[fid]=lo; upper[fid]=hi
     return dict(path=f"data/provincia={NN}.parquet", size=finp.stat().st_size, rows=nrows,
                 lower={str(k):v.hex() for k,v in lower.items()},
                 upper={str(k):v.hex() for k,v in upper.items()},
