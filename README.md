@@ -1,5 +1,7 @@
 # Catastro · Portolan 🟫
 
+🌐 **[Explorar el catálogo (visor web) →](https://storage.googleapis.com/catastro-es-portolan/web/index.html)**
+
 El **Catastro español** completo como catálogo cloud-native **Portolan**: edificios, parcelas y
 direcciones de **toda España** re-expuestos como **GeoParquet remoto + STAC + Apache Iceberg** sobre
 almacenamiento público — `read_parquet` en sitio, `ATTACH` desde DuckDB / Snowflake, sin servidor, sin
