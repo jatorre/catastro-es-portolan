@@ -9,7 +9,9 @@
       "partitioned": true,
       "parquet": "v3/edificios/data/*.parquet",
       "meta": "v3/edificios/metadata/v1.metadata.json",
-      "preview": "v3/edificios/data/provincia=55.parquet"
+      "preview": "v3/edificios/data/provincia=55.parquet",
+      "tiles": "tiles/edificios.pmtiles",
+      "tilesLayer": "edificios"
     },
     {
       "id": "parcelas",
@@ -18,7 +20,9 @@
       "partitioned": true,
       "parquet": "v3/parcelas/data/*.parquet",
       "meta": "v3/parcelas/metadata/v1.metadata.json",
-      "preview": "v3/parcelas/data/provincia=55.parquet"
+      "preview": "v3/parcelas/data/provincia=55.parquet",
+      "tiles": "tiles/parcelas.pmtiles",
+      "tilesLayer": "parcelas"
     },
     {
       "id": "direcciones",
@@ -27,7 +31,9 @@
       "partitioned": true,
       "parquet": "v3/direcciones/data/*.parquet",
       "meta": "v3/direcciones/metadata/v1.metadata.json",
-      "preview": "v3/direcciones/data/provincia=55.parquet"
+      "preview": "v3/direcciones/data/provincia=55.parquet",
+      "tiles": "tiles/direcciones.pmtiles",
+      "tilesLayer": "direcciones"
     }
   ]
 }

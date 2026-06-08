@@ -17,5 +17,14 @@
     "parcelas": 51953175,
     "direcciones": 15886629
   },
-  "layout": "data/parquet/{tema}/provincia={NN}.parquet (Hive-partitioned, EPSG:4326, GeoParquet 1.1, ordenado Hilbert, ZSTD)"
+  "layout": "data/parquet/{tema}/provincia={NN}.parquet (Hive-partitioned, EPSG:4326, GeoParquet 1.1, ordenado Hilbert, ZSTD)",
+  "tiles": {
+    "format": "pmtiles",
+    "note": "Vector tiles (MVT en PMTiles) — equivalente vectorial del COG: artefacto de visualización servido por range requests, junto al GeoParquet/Iceberg que sigue siendo la fuente analítica. Generado con tippecanoe (-z15 -Z4 --drop-densest-as-needed).",
+    "layers": {
+      "edificios":   { "path": "tiles/edificios.pmtiles",   "source_layer": "edificios",   "geometry": "polygon" },
+      "parcelas":    { "path": "tiles/parcelas.pmtiles",     "source_layer": "parcelas",    "geometry": "polygon" },
+      "direcciones": { "path": "tiles/direcciones.pmtiles",  "source_layer": "direcciones", "geometry": "point" }
+    }
+  }
 }

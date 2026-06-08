@@ -7,6 +7,10 @@ direcciones de **toda España** re-expuestos como **GeoParquet remoto + STAC + A
 almacenamiento público — `read_parquet` en sitio, `ATTACH` desde DuckDB / Snowflake, sin servidor, sin
 credenciales. CRS **EPSG:4326** (WGS84), particionado por provincia.
 
+Además, cada capa se publica como **vector tiles PMTiles** (`tiles/{edificios,parcelas,direcciones}.pmtiles`) —
+el equivalente vectorial del COG: un artefacto de visualización servido por *range requests* (consumible
+directamente en MapLibre con `pmtiles://`), junto al GeoParquet/Iceberg que sigue siendo la fuente analítica.
+
 Una capa base reutilizable a escala nacional: antigüedad/uso/superficie de edificios, parcelas, y un
 **gazetteer de direcciones** (base soberana de geocoding). Construido desde **Catastro INSPIRE** (datos
 abiertos no protegidos: sin titularidad ni valor catastral).
